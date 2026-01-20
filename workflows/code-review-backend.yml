@@ -1,5 +1,4 @@
 # Code Review Workflow for Backend (Python/FastAPI)
-# Copy this file to: Taddle-Backend/.github/workflows/code-review.yml
 
 name: AI Code Review
 
@@ -22,8 +21,7 @@ jobs:
     name: Risk Classification Scan
     runs-on: ubuntu-latest
     outputs:
-      has_a_class_risks: ${{ steps.scan.outputs.has_a_class_risks }}
-      risk_report: ${{ steps.scan.outputs.risk_report }}
+      has_a_class_risks: ${{ steps.parse.outputs.has_a_class_risks }}
 
     steps:
       - name: Checkout code
@@ -40,12 +38,33 @@ jobs:
             **/*.sql
 
       - name: Fetch review rules
+        id: fetch-rules
         run: |
-          # Fetch rules from code-review-agent repo
           mkdir -p .review-rules
-          curl -sL https://raw.githubusercontent.com/YoumigoTech/code-review-agent/main/rules/a-class-risks.md -o .review-rules/a-class-risks.md
-          curl -sL https://raw.githubusercontent.com/YoumigoTech/code-review-agent/main/rules/b-class-risks.md -o .review-rules/b-class-risks.md
-          curl -sL https://raw.githubusercontent.com/YoumigoTech/code-review-agent/main/rules/python-patterns.md -o .review-rules/python-patterns.md
+
+          # Fetch with error handling
+          curl -sfL https://raw.githubusercontent.com/YoumigoTech/code-review-agent/main/rules/a-class-risks.md -o .review-rules/a-class-risks.md || { echo "::error::Failed to fetch a-class-risks.md"; exit 1; }
+          curl -sfL https://raw.githubusercontent.com/YoumigoTech/code-review-agent/main/rules/b-class-risks.md -o .review-rules/b-class-risks.md || { echo "::error::Failed to fetch b-class-risks.md"; exit 1; }
+          curl -sfL https://raw.githubusercontent.com/YoumigoTech/code-review-agent/main/rules/python-patterns.md -o .review-rules/python-patterns.md || { echo "::error::Failed to fetch python-patterns.md"; exit 1; }
+
+          # Read rules into environment variables (escape for GitHub Actions)
+          {
+            echo "A_CLASS_RULES<<EOF"
+            cat .review-rules/a-class-risks.md
+            echo "EOF"
+          } >> $GITHUB_ENV
+
+          {
+            echo "B_CLASS_RULES<<EOF"
+            cat .review-rules/b-class-risks.md
+            echo "EOF"
+          } >> $GITHUB_ENV
+
+          {
+            echo "PYTHON_PATTERNS<<EOF"
+            cat .review-rules/python-patterns.md
+            echo "EOF"
+          } >> $GITHUB_ENV
 
       - name: Run AI Code Review
         id: scan
@@ -60,13 +79,13 @@ jobs:
             ## Risk Classification Rules
 
             ### A-Class Risks (BLOCKING - require human approval)
-            $(cat .review-rules/a-class-risks.md)
+            ${{ env.A_CLASS_RULES }}
 
             ### B-Class Risks (NON-BLOCKING - suggestions only)
-            $(cat .review-rules/b-class-risks.md)
+            ${{ env.B_CLASS_RULES }}
 
             ### Python-Specific Patterns
-            $(cat .review-rules/python-patterns.md)
+            ${{ env.PYTHON_PATTERNS }}
 
             ## Changed Files
             ${{ steps.changed-files.outputs.all_changed_files }}
@@ -105,20 +124,22 @@ jobs:
 
             ### Summary
 
-            At the end, output:
-            ```
-            HAS_A_CLASS_RISKS: <true|false>
-            TOTAL_A_CLASS: <count>
-            TOTAL_B_CLASS: <count>
+            At the end, output a JSON block:
+            ```json
+            {"has_a_class_risks": true|false, "total_a_class": <count>, "total_b_class": <count>}
             ```
 
             Be thorough but avoid false positives. Only flag genuine risks.
 
       - name: Parse scan results
         id: parse
+        env:
+          SCAN_RESPONSE: ${{ steps.scan.outputs.response }}
         run: |
-          # Extract whether A-class risks were found
-          if echo "${{ steps.scan.outputs.response }}" | grep -q "HAS_A_CLASS_RISKS: true"; then
+          # Parse JSON from response for more reliable detection
+          if echo "$SCAN_RESPONSE" | grep -q '"has_a_class_risks": true'; then
+            echo "has_a_class_risks=true" >> $GITHUB_OUTPUT
+          elif echo "$SCAN_RESPONSE" | grep -q '"has_a_class_risks":true'; then
             echo "has_a_class_risks=true" >> $GITHUB_OUTPUT
           else
             echo "has_a_class_risks=false" >> $GITHUB_OUTPUT
@@ -126,11 +147,12 @@ jobs:
 
       - name: Post review comments
         uses: actions/github-script@v7
+        env:
+          SCAN_RESPONSE: ${{ steps.scan.outputs.response }}
         with:
           script: |
-            const response = `${{ steps.scan.outputs.response }}`;
+            const response = process.env.SCAN_RESPONSE || 'No response from AI review';
 
-            // Post summary comment
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
