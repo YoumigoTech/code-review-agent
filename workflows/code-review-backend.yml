@@ -59,8 +59,8 @@ jobs:
           else
             echo "skip_review=false" >> $GITHUB_OUTPUT
             # Warn if diff was truncated
-            if [ "$DIFF_SIZE" -gt 50000 ]; then
-              echo "::warning::Diff truncated from $DIFF_SIZE to 50000 bytes"
+            if [ "$DIFF_SIZE" -gt 200000 ]; then
+              echo "::warning::Diff truncated from $DIFF_SIZE to 200000 bytes"
             fi
           fi
 
@@ -87,7 +87,7 @@ jobs:
           A_CLASS_RULES=$(cat .review-rules/a-class-risks.md)
           B_CLASS_RULES=$(cat .review-rules/b-class-risks.md)
           PYTHON_PATTERNS=$(cat .review-rules/python-patterns.md)
-          PR_DIFF=$(cat pr_diff.txt | head -c 50000)
+          PR_DIFF=$(cat pr_diff.txt | head -c 200000)
 
           # Create prompt file to avoid shell escaping issues
           cat > prompt.txt << 'PROMPT_END'
@@ -123,24 +123,36 @@ jobs:
           2. For each risk found, output in this format:
 
           ### A-Class Risks Found
-          ```
-          RISK_LEVEL: A
-          FILE: <filepath>
-          LINE: <line_number>
-          TYPE: <A1-A6>
-          DESCRIPTION: <description>
-          RECOMMENDATION: <how to fix>
-          ```
 
-          ### B-Class Risks Found
-          ```
-          RISK_LEVEL: B
-          FILE: <filepath>
-          LINE: <line_number>
-          TYPE: <B1-B6>
-          DESCRIPTION: <description>
-          SUGGESTION: <corrected code>
-          ```
+          #### A[N]: [Risk Name]
+          - **Location**: `<filepath>:<line_number>`
+          - **Issue**: <brief description of the problem>
+          - **Recommendation**: <how to fix>
+          - **Reference**: [A[N] Rule](https://github.com/YoumigoTech/code-review-agent/blob/main/rules/a-class-risks.md#a[n]-anchor)
+
+          Risk Type Reference:
+          - A1: Implicit Assumptions Not Validated
+          - A2: State Modified in Multiple Places
+          - A3: Incomplete Conditionals
+          - A4: Complex Async Without Guarantees
+          - A5: Error Paths Not First-Class
+          - A6: Ambiguous Function Responsibilities
+
+          ### B-Class Suggestions
+
+          #### B[N]: [Risk Name]
+          - **Location**: `<filepath>:<line_number>`
+          - **Issue**: <brief description>
+          - **Suggestion**: <fix code or recommendation>
+          - **Reference**: [B[N] Rule](https://github.com/YoumigoTech/code-review-agent/blob/main/rules/b-class-risks.md#b[n]-anchor)
+
+          Risk Type Reference:
+          - B1: Types and Contracts
+          - B2: Serialization Robustness
+          - B3: Test Completeness
+          - B4: Maintainability Hygiene
+          - B5: Observability Gaps
+          - B6: UI/UX Consistency
 
           ### Summary
           ```json
@@ -156,9 +168,9 @@ jobs:
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $OPENAI_API_KEY" \
             -d "$(jq -n --arg prompt "$PROMPT_CONTENT" '{
-              model: "gpt-4o",
+              model: "gpt-4.1",
               messages: [{"role": "user", "content": $prompt}],
-              max_tokens: 4000,
+              max_tokens: 8000,
               temperature: 0.1
             }')")
 
