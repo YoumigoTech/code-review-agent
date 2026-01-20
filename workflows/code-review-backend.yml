@@ -1,0 +1,169 @@
+# Code Review Workflow for Backend (Python/FastAPI)
+# Copy this file to: Taddle-Backend/.github/workflows/code-review.yml
+
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '**.py'
+      - '**.sql'
+      - 'requirements*.txt'
+      - 'pyproject.toml'
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  risk-scan:
+    name: Risk Classification Scan
+    runs-on: ubuntu-latest
+    outputs:
+      has_a_class_risks: ${{ steps.scan.outputs.has_a_class_risks }}
+      risk_report: ${{ steps.scan.outputs.risk_report }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v44
+        with:
+          files: |
+            **/*.py
+            **/*.sql
+
+      - name: Fetch review rules
+        run: |
+          # Fetch rules from code-review-agent repo
+          mkdir -p .review-rules
+          curl -sL https://raw.githubusercontent.com/YoumigoTech/code-review-agent/main/rules/a-class-risks.md -o .review-rules/a-class-risks.md
+          curl -sL https://raw.githubusercontent.com/YoumigoTech/code-review-agent/main/rules/b-class-risks.md -o .review-rules/b-class-risks.md
+          curl -sL https://raw.githubusercontent.com/YoumigoTech/code-review-agent/main/rules/python-patterns.md -o .review-rules/python-patterns.md
+
+      - name: Run AI Code Review
+        id: scan
+        uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          model: claude-sonnet-4-20250514
+          timeout_minutes: 10
+          direct_prompt: |
+            You are a code review agent. Analyze the following PR diff and classify risks.
+
+            ## Risk Classification Rules
+
+            ### A-Class Risks (BLOCKING - require human approval)
+            $(cat .review-rules/a-class-risks.md)
+
+            ### B-Class Risks (NON-BLOCKING - suggestions only)
+            $(cat .review-rules/b-class-risks.md)
+
+            ### Python-Specific Patterns
+            $(cat .review-rules/python-patterns.md)
+
+            ## Changed Files
+            ${{ steps.changed-files.outputs.all_changed_files }}
+
+            ## Instructions
+
+            1. Analyze each changed file for A-class and B-class risks
+            2. For each risk found, output in this exact format:
+
+            ### A-Class Risks Found
+
+            If any A-class risks are found:
+            ```
+            RISK_LEVEL: A
+            FILE: <filepath>
+            LINE: <line_number>
+            TYPE: <A1-A6>
+            DESCRIPTION: <description>
+            RECOMMENDATION: <how to fix>
+            ```
+
+            ### B-Class Risks Found
+
+            For B-class risks, output GitHub suggestion comments:
+            ```
+            RISK_LEVEL: B
+            FILE: <filepath>
+            LINE: <line_number>
+            TYPE: <B1-B6>
+            DESCRIPTION: <description>
+            SUGGESTION:
+            \`\`\`suggestion
+            <corrected code>
+            \`\`\`
+            ```
+
+            ### Summary
+
+            At the end, output:
+            ```
+            HAS_A_CLASS_RISKS: <true|false>
+            TOTAL_A_CLASS: <count>
+            TOTAL_B_CLASS: <count>
+            ```
+
+            Be thorough but avoid false positives. Only flag genuine risks.
+
+      - name: Parse scan results
+        id: parse
+        run: |
+          # Extract whether A-class risks were found
+          if echo "${{ steps.scan.outputs.response }}" | grep -q "HAS_A_CLASS_RISKS: true"; then
+            echo "has_a_class_risks=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_a_class_risks=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post review comments
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const response = `${{ steps.scan.outputs.response }}`;
+
+            // Post summary comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## AI Code Review Results\n\n${response}`
+            });
+
+  block-on-a-class:
+    name: A-Class Risk Gate
+    runs-on: ubuntu-latest
+    needs: risk-scan
+    if: needs.risk-scan.outputs.has_a_class_risks == 'true'
+
+    steps:
+      - name: Block PR
+        run: |
+          echo "::error::A-Class risks detected. Human review required."
+          echo ""
+          echo "This PR contains A-Class risks that require human review."
+          echo "Please review the AI Code Review comment and either:"
+          echo "  1. Fix the identified risks"
+          echo "  2. Add RISK-ACCEPTED comments with justification"
+          echo "  3. Request exemption from a senior engineer"
+          exit 1
+
+  approve-no-risks:
+    name: No A-Class Risks
+    runs-on: ubuntu-latest
+    needs: risk-scan
+    if: needs.risk-scan.outputs.has_a_class_risks == 'false'
+
+    steps:
+      - name: Approve
+        run: |
+          echo "No A-Class risks detected. PR can proceed."
+          echo "Please review any B-Class suggestions in the PR comments."

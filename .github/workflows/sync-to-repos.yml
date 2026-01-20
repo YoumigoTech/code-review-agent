@@ -1,0 +1,132 @@
+# Sync workflow files to target repositories
+# This workflow runs when rules or workflows are updated
+
+name: Sync to Repositories
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'rules/**'
+      - 'workflows/**'
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: 'Target repository (leave empty for all)'
+        required: false
+        type: choice
+        options:
+          - all
+          - backend
+          - frontend
+          - infra
+
+permissions:
+  contents: read
+
+jobs:
+  sync-backend:
+    name: Sync to Backend
+    runs-on: ubuntu-latest
+    if: github.event.inputs.target_repo == 'all' || github.event.inputs.target_repo == 'backend' || github.event.inputs.target_repo == ''
+
+    steps:
+      - name: Checkout code-review-agent
+        uses: actions/checkout@v4
+
+      - name: Checkout Taddle-Backend
+        uses: actions/checkout@v4
+        with:
+          repository: YoumigoTech/Taddle-Backend
+          token: ${{ secrets.REPO_ACCESS_TOKEN }}
+          path: target-repo
+
+      - name: Copy workflow file
+        run: |
+          mkdir -p target-repo/.github/workflows
+          cp workflows/code-review-backend.yml target-repo/.github/workflows/code-review.yml
+
+      - name: Create PR if changes exist
+        uses: peter-evans/create-pull-request@v6
+        with:
+          path: target-repo
+          token: ${{ secrets.REPO_ACCESS_TOKEN }}
+          commit-message: 'chore: update code review workflow from code-review-agent'
+          title: 'Update Code Review Workflow'
+          body: |
+            This PR updates the code review workflow from the central `code-review-agent` repository.
+
+            Changes synced from: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          branch: chore/update-code-review-workflow
+          delete-branch: true
+
+  sync-frontend:
+    name: Sync to Frontend
+    runs-on: ubuntu-latest
+    if: github.event.inputs.target_repo == 'all' || github.event.inputs.target_repo == 'frontend' || github.event.inputs.target_repo == ''
+
+    steps:
+      - name: Checkout code-review-agent
+        uses: actions/checkout@v4
+
+      - name: Checkout Taddle-frontend
+        uses: actions/checkout@v4
+        with:
+          repository: YoumigoTech/Taddle-frontend
+          token: ${{ secrets.REPO_ACCESS_TOKEN }}
+          path: target-repo
+
+      - name: Copy workflow file
+        run: |
+          mkdir -p target-repo/.github/workflows
+          cp workflows/code-review-frontend.yml target-repo/.github/workflows/code-review.yml
+
+      - name: Create PR if changes exist
+        uses: peter-evans/create-pull-request@v6
+        with:
+          path: target-repo
+          token: ${{ secrets.REPO_ACCESS_TOKEN }}
+          commit-message: 'chore: update code review workflow from code-review-agent'
+          title: 'Update Code Review Workflow'
+          body: |
+            This PR updates the code review workflow from the central `code-review-agent` repository.
+
+            Changes synced from: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          branch: chore/update-code-review-workflow
+          delete-branch: true
+
+  sync-infra:
+    name: Sync to Infra
+    runs-on: ubuntu-latest
+    if: github.event.inputs.target_repo == 'all' || github.event.inputs.target_repo == 'infra' || github.event.inputs.target_repo == ''
+
+    steps:
+      - name: Checkout code-review-agent
+        uses: actions/checkout@v4
+
+      - name: Checkout Taddle-Infra
+        uses: actions/checkout@v4
+        with:
+          repository: YoumigoTech/Taddle-Infra
+          token: ${{ secrets.REPO_ACCESS_TOKEN }}
+          path: target-repo
+
+      - name: Copy workflow file
+        run: |
+          mkdir -p target-repo/.github/workflows
+          cp workflows/code-review-infra.yml target-repo/.github/workflows/code-review.yml
+
+      - name: Create PR if changes exist
+        uses: peter-evans/create-pull-request@v6
+        with:
+          path: target-repo
+          token: ${{ secrets.REPO_ACCESS_TOKEN }}
+          commit-message: 'chore: update code review workflow from code-review-agent'
+          title: 'Update Code Review Workflow'
+          body: |
+            This PR updates the code review workflow from the central `code-review-agent` repository.
+
+            Changes synced from: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          branch: chore/update-code-review-workflow
+          delete-branch: true
