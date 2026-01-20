@@ -120,11 +120,41 @@ const userId = response.data.user.id
 ## B3: Test Completeness
 
 ### Description
-Missing test coverage for critical paths, especially serialization round-trips and enum completeness.
+Missing test coverage for critical paths, especially new API endpoints, serialization round-trips and enum completeness.
 
 ### Blocking Level: **Conditional** (required for critical paths)
 
 ### Patterns to Detect
+
+#### New API File Without Tests (Critical)
+```python
+# When a new API file is added (e.g., app/api/v1/chat/messages.py)
+# with >100 lines, tests MUST be added
+
+# BAD: 448-line messages.py with 0 tests
+
+# GOOD: Corresponding test file exists
+# tests/unit/chat/test_messages.py covering:
+# - Happy path for each endpoint
+# - Permission denied scenarios
+# - Rate limit exceeded scenarios
+# - Error handling paths
+```
+
+#### New Service Without Tests (Critical)
+```python
+# When a new service is added (e.g., app/services/chat/notification.py)
+# with external dependencies (boto3, HTTP calls), tests MUST be added
+
+# BAD: notification.py with SNS calls but no mocked tests
+
+# GOOD: tests/unit/chat/test_notification.py with mocked boto3:
+@patch("boto3.client")
+def test_send_notification_success(mock_sns):
+    mock_sns.return_value.publish.return_value = {"MessageId": "123"}
+    result = send_chat_notification(user_id, message)
+    assert result is True
+```
 
 #### Missing Codable Round-trip Test
 ```swift
@@ -163,11 +193,40 @@ def test_status_enum_completeness():
 ## B4: Maintainability Hygiene
 
 ### Description
-Code that violates DRY (Don't Repeat Yourself) or has redundant logging/comments.
+Code that violates DRY (Don't Repeat Yourself), has debug print statements, or redundant logging/comments.
 
-### Blocking Level: **No** (suggestion only)
+### Blocking Level: **Yes** (should fix before merge for debug prints)
 
 ### Patterns to Detect
+
+#### Debug Print Statements (Critical)
+```python
+# BAD: Debug prints with emojis left in production code
+print(f"⏱️ [SEND] Start - to {conversation_id}")
+print(f"🔍 Looking up user {user_id}")
+print(f"✅ Message sent successfully")
+print(f"DEBUG: {variable}")
+
+# GOOD: Use proper logging
+logger.debug(f"Starting send to {conversation_id}")
+logger.info(f"Message sent successfully")
+
+# OR: Remove entirely if not needed
+```
+
+#### Timing Debug Prints
+```python
+# BAD: Manual timing with prints
+start_time = time.time()
+print(f"⏱️ [SEND] Start - {time.time()}", flush=True)
+# ... code ...
+print(f"⏱️ [SEND] Done - took {time.time() - start_time}s")
+
+# GOOD: Use structured logging or metrics
+logger.debug("send_message started", extra={"conversation_id": cid})
+# ... code ...
+metrics.timing("send_message.duration", time.time() - start_time)
+```
 
 #### Duplicate Code Blocks
 ```python

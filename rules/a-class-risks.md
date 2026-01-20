@@ -17,6 +17,35 @@ Code that makes assumptions about input, state, or environment without explicit 
 - `// assume`, `# assume`, `/* assume`
 
 ### Code Patterns
+
+#### Null Object Fallback (Critical)
+```python
+# BAD: Creates invalid/null-like data that leaks into responses
+sender_uuid = sender.id if sender else UUID(int=0)  # 00000000-0000-0000-0000-000000000000
+user_id = user.id if user else "unknown"
+
+# GOOD: Explicit error or skip
+if not sender:
+    logger.warning(f"Unknown sender: {sender_id}")
+    continue  # Skip this item
+sender_uuid = sender.id
+```
+
+#### Convention-Based ID Assumptions
+```python
+# BAD: Assumes conversation_id format without validation
+def get_recipient(conversation_id: str):
+    # Assumes P2P: conversation_id == recipient_tinode_uid
+    return get_user_by_tinode_uid(conversation_id)
+
+# GOOD: Explicit format validation
+def get_recipient(conversation_id: str):
+    if not is_valid_p2p_conversation_id(conversation_id):
+        raise InvalidConversationError(f"Not a P2P conversation: {conversation_id}")
+    return get_user_by_tinode_uid(conversation_id)
+```
+
+#### Missing Existence Check
 ```python
 # BAD: Implicit assumption
 def process_user(user_id):
@@ -141,6 +170,26 @@ Asynchronous operations (network calls, database queries, background tasks) with
 - `Promise`, `Observable`, `Future`
 
 ### Code Patterns
+
+#### Blocking I/O in Async Context (Critical)
+```python
+# BAD: Synchronous boto3/requests in async function blocks event loop
+async def send_notification(user_id: str, message: str):
+    sns_client = boto3.client("sns")  # Synchronous!
+    sns_client.publish(...)  # Blocks entire event loop
+
+# GOOD: Use run_in_executor or async client
+async def send_notification(user_id: str, message: str):
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, lambda: sns_client.publish(...))
+
+# BETTER: Use aioboto3 for true async
+async def send_notification(user_id: str, message: str):
+    async with aioboto3.client("sns") as sns:
+        await sns.publish(...)
+```
+
+#### Missing Ordering Guarantee
 ```swift
 // BAD: No ordering guarantee
 func loadData() async {
@@ -219,10 +268,37 @@ Functions with vague names or multiple responsibilities that make it unclear wha
 - `handle`, `process`, `manage`
 - `do`, `doSomething`, `execute`
 - `submit`, `run`, `perform`
-- Functions > 50 lines
-- Functions with > 3 side effects
+- Functions > 100 lines (critical), > 50 lines (warning)
+- Functions with > 3 side effects (DB, cache, notifications, analytics, etc.)
 
 ### Code Patterns
+
+#### Long Function (Critical: >100 lines)
+```python
+# BAD: 150-line function handling too many concerns
+async def send_message(conversation_id, request, current_user, db):
+    # 1. User lookup (20 lines)
+    # 2. Permission check (25 lines)
+    # 3. Rate limit check (20 lines)
+    # 4. Message send to service (30 lines)
+    # 5. Rate limit recording (15 lines)
+    # 6. Connection tracking (20 lines)
+    # 7. Push notification (15 lines)
+    # 8. Response formatting (10 lines)
+    # Total: ~155 lines - TOO LONG
+
+# GOOD: Extract into focused helper functions
+async def send_message(conversation_id, request, current_user, db):
+    sender = await _get_sender(current_user, db)
+    recipient = await _get_recipient(conversation_id, db)
+    await _check_permissions(sender, recipient, db)
+    await _check_rate_limit(sender, recipient, db)
+    result = await _send_to_tinode(sender, recipient, request)
+    await _post_send_actions(sender, recipient, result, db)
+    return _format_response(result)
+```
+
+#### Multiple Side Effects
 ```python
 # BAD: Ambiguous responsibility
 def handle_user_action(action):
