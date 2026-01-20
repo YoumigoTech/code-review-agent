@@ -45,12 +45,13 @@ jobs:
             **/*.tsx
             **/*.yaml
             **/*.yml
+          separator: '\n'
 
       - name: Get PR diff
         id: diff
         run: |
-          # Handle file names with special characters safely
-          echo "${{ steps.changed-files.outputs.all_changed_files }}" | tr ' ' '\n' | xargs -I {} git diff ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }} -- "{}" > pr_diff.txt || true
+          # Handle file names with special characters (including spaces) safely
+          echo "${{ steps.changed-files.outputs.all_changed_files }}" | xargs -I {} git diff ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }} -- "{}" > pr_diff.txt || true
 
           DIFF_SIZE=$(wc -c < pr_diff.txt)
           echo "Diff size: $DIFF_SIZE bytes"
