@@ -1,5 +1,8 @@
 # Code Review Workflow for Frontend (Swift/iOS)
 # Uses OpenAI GPT-4 for code review with A/B risk classification
+#
+# Migration from Claude to OpenAI: Required OPENAI_API_KEY secret.
+# This is a permanent migration to use OpenAI's GPT-4o model.
 
 name: AI Code Review
 
@@ -39,11 +42,29 @@ jobs:
             **/*.swift
 
       - name: Get PR diff
+        id: diff
         run: |
-          git diff ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }} -- ${{ steps.changed-files.outputs.all_changed_files }} > pr_diff.txt
-          echo "Diff size: $(wc -c < pr_diff.txt) bytes"
+          # Handle file names with special characters safely
+          echo "${{ steps.changed-files.outputs.all_changed_files }}" | tr ' ' '\n' | xargs -I {} git diff ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }} -- "{}" > pr_diff.txt || true
+
+          DIFF_SIZE=$(wc -c < pr_diff.txt)
+          echo "Diff size: $DIFF_SIZE bytes"
+
+          # Check for empty diff
+          if [ ! -s pr_diff.txt ]; then
+            echo "No relevant files changed, skipping AI review"
+            echo '{"has_a_class_risks": false, "total_a_class": 0, "total_b_class": 0}' > review_result.txt
+            echo "skip_review=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip_review=false" >> $GITHUB_OUTPUT
+            # Warn if diff was truncated
+            if [ "$DIFF_SIZE" -gt 50000 ]; then
+              echo "::warning::Diff truncated from $DIFF_SIZE to 50000 bytes"
+            fi
+          fi
 
       - name: Fetch review rules
+        if: steps.diff.outputs.skip_review != 'true'
         run: |
           mkdir -p .review-rules
           curl -sfL https://raw.githubusercontent.com/YoumigoTech/code-review-agent/main/rules/a-class-risks.md -o .review-rules/a-class-risks.md || { echo "::error::Failed to fetch a-class-risks.md"; exit 1; }
@@ -52,9 +73,16 @@ jobs:
 
       - name: Run AI Code Review
         id: scan
+        if: steps.diff.outputs.skip_review != 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
+          # Check API key exists
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error::OPENAI_API_KEY secret is not configured"
+            exit 1
+          fi
+
           A_CLASS_RULES=$(cat .review-rules/a-class-risks.md)
           B_CLASS_RULES=$(cat .review-rules/b-class-risks.md)
           SWIFT_PATTERNS=$(cat .review-rules/swift-patterns.md)
@@ -140,10 +168,12 @@ jobs:
 
           REVIEW_RESULT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty')
 
+          # Check for API errors - fail workflow if review failed
           if [ -z "$REVIEW_RESULT" ]; then
             ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error.message // "Unknown error"')
             echo "::error::OpenAI API error: $ERROR_MSG"
-            REVIEW_RESULT="Error calling OpenAI API: $ERROR_MSG"
+            echo "Error calling OpenAI API: $ERROR_MSG" > review_result.txt
+            exit 1
           fi
 
           echo "$REVIEW_RESULT" > review_result.txt
@@ -179,6 +209,12 @@ jobs:
       - name: Block PR
         run: |
           echo "::error::A-Class risks detected. Human review required."
+          echo ""
+          echo "This PR contains A-Class risks that require human review."
+          echo "Please review the AI Code Review comment and either:"
+          echo "  1. Fix the identified risks"
+          echo "  2. Add RISK-ACCEPTED comments with justification"
+          echo "  3. Request exemption from a senior engineer"
           exit 1
 
   approve-no-risks:
