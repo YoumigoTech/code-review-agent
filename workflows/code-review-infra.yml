@@ -1,4 +1,5 @@
 # Code Review Workflow for Infrastructure (TypeScript/CDK)
+# Uses OpenAI GPT-4 for code review with A/B risk classification
 
 name: AI Code Review
 
@@ -18,7 +19,6 @@ permissions:
   contents: read
   pull-requests: write
   issues: write
-  id-token: write
 
 jobs:
   risk-scan:
@@ -43,120 +43,121 @@ jobs:
             **/*.yaml
             **/*.yml
 
+      - name: Get PR diff
+        run: |
+          git diff ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }} -- ${{ steps.changed-files.outputs.all_changed_files }} > pr_diff.txt
+          echo "Diff size: $(wc -c < pr_diff.txt) bytes"
+
       - name: Fetch review rules
-        id: fetch-rules
         run: |
           mkdir -p .review-rules
-
-          # Fetch with error handling
           curl -sfL https://raw.githubusercontent.com/YoumigoTech/code-review-agent/main/rules/a-class-risks.md -o .review-rules/a-class-risks.md || { echo "::error::Failed to fetch a-class-risks.md"; exit 1; }
           curl -sfL https://raw.githubusercontent.com/YoumigoTech/code-review-agent/main/rules/b-class-risks.md -o .review-rules/b-class-risks.md || { echo "::error::Failed to fetch b-class-risks.md"; exit 1; }
           curl -sfL https://raw.githubusercontent.com/YoumigoTech/code-review-agent/main/rules/cdk-patterns.md -o .review-rules/cdk-patterns.md || { echo "::error::Failed to fetch cdk-patterns.md"; exit 1; }
 
-          # Read rules into environment variables (escape for GitHub Actions)
-          {
-            echo "A_CLASS_RULES<<EOF"
-            cat .review-rules/a-class-risks.md
-            echo "EOF"
-          } >> $GITHUB_ENV
-
-          {
-            echo "B_CLASS_RULES<<EOF"
-            cat .review-rules/b-class-risks.md
-            echo "EOF"
-          } >> $GITHUB_ENV
-
-          {
-            echo "CDK_PATTERNS<<EOF"
-            cat .review-rules/cdk-patterns.md
-            echo "EOF"
-          } >> $GITHUB_ENV
-
       - name: Run AI Code Review
         id: scan
-        uses: anthropics/claude-code-action@beta
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          model: claude-sonnet-4-20250514
-          timeout_minutes: 10
-          direct_prompt: |
-            You are a code review agent for AWS CDK/TypeScript infrastructure. Analyze the following PR diff and classify risks.
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          A_CLASS_RULES=$(cat .review-rules/a-class-risks.md)
+          B_CLASS_RULES=$(cat .review-rules/b-class-risks.md)
+          CDK_PATTERNS=$(cat .review-rules/cdk-patterns.md)
+          PR_DIFF=$(cat pr_diff.txt | head -c 50000)
 
-            ## Risk Classification Rules
+          cat > prompt.txt << 'PROMPT_END'
+          You are a code review agent for AWS CDK/TypeScript infrastructure. Analyze the PR diff and classify risks.
 
-            ### A-Class Risks (BLOCKING - require human approval)
-            ${{ env.A_CLASS_RULES }}
+          ## Risk Classification Rules
 
-            ### B-Class Risks (NON-BLOCKING - suggestions only)
-            ${{ env.B_CLASS_RULES }}
+          ### A-Class Risks (BLOCKING - require human approval)
+          PROMPT_END
+          echo "$A_CLASS_RULES" >> prompt.txt
+          cat >> prompt.txt << 'PROMPT_END'
 
-            ### CDK/TypeScript-Specific Patterns
-            ${{ env.CDK_PATTERNS }}
+          ### B-Class Risks (NON-BLOCKING - suggestions only)
+          PROMPT_END
+          echo "$B_CLASS_RULES" >> prompt.txt
+          cat >> prompt.txt << 'PROMPT_END'
 
-            ## Changed Files
-            ${{ steps.changed-files.outputs.all_changed_files }}
+          ### CDK/TypeScript-Specific Patterns
+          PROMPT_END
+          echo "$CDK_PATTERNS" >> prompt.txt
+          cat >> prompt.txt << 'PROMPT_END'
 
-            ## Infrastructure-Specific Checks
+          ## Infrastructure-Specific Checks
+          Pay special attention to:
+          - Hardcoded AWS account IDs or regions - A1 risk
+          - Missing RemovalPolicy on stateful resources - A5 risk
+          - Overly permissive IAM policies (`*` actions or resources) - A1 risk
+          - Secrets in plain text - A1 risk (CRITICAL)
+          - Non-null assertions (`!`) - A1 risk
+          - `any` type usage - A1 risk
 
-            Pay special attention to:
-            - Hardcoded AWS account IDs or regions - A1 risk
-            - Missing RemovalPolicy on stateful resources (S3, RDS, DynamoDB) - A5 risk
-            - Overly permissive IAM policies (`*` actions or resources) - A1 risk
-            - Secrets in plain text - A1 risk (CRITICAL)
-            - Missing VPC configuration for sensitive workloads - A4 risk
-            - Non-null assertions (`!`) - A1 risk
-            - `any` type usage - A1 risk
+          ## PR Diff
+          ```diff
+          PROMPT_END
+          echo "$PR_DIFF" >> prompt.txt
+          cat >> prompt.txt << 'PROMPT_END'
+          ```
 
-            ## Instructions
+          ## Instructions
+          1. Analyze the diff for A-class and B-class risks
+          2. Output format:
 
-            1. Analyze each changed file for A-class and B-class risks
-            2. For each risk found, output in this exact format:
+          ### A-Class Risks Found
+          ```
+          RISK_LEVEL: A
+          FILE: <filepath>
+          LINE: <line_number>
+          TYPE: <A1-A6>
+          DESCRIPTION: <description>
+          RECOMMENDATION: <how to fix>
+          ```
 
-            ### A-Class Risks Found
+          ### B-Class Risks Found
+          ```
+          RISK_LEVEL: B
+          FILE: <filepath>
+          LINE: <line_number>
+          TYPE: <B1-B6>
+          DESCRIPTION: <description>
+          SUGGESTION: <corrected code>
+          ```
 
-            If any A-class risks are found:
-            ```
-            RISK_LEVEL: A
-            FILE: <filepath>
-            LINE: <line_number>
-            TYPE: <A1-A6>
-            DESCRIPTION: <description>
-            RECOMMENDATION: <how to fix>
-            ```
+          ### Summary
+          ```json
+          {"has_a_class_risks": true|false, "total_a_class": <count>, "total_b_class": <count>}
+          ```
 
-            ### B-Class Risks Found
+          Be especially strict about IAM policies and secret handling.
+          PROMPT_END
 
-            For B-class risks, output GitHub suggestion comments:
-            ```
-            RISK_LEVEL: B
-            FILE: <filepath>
-            LINE: <line_number>
-            TYPE: <B1-B6>
-            DESCRIPTION: <description>
-            SUGGESTION:
-            \`\`\`suggestion
-            <corrected code>
-            \`\`\`
-            ```
+          PROMPT_CONTENT=$(cat prompt.txt)
+          RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $OPENAI_API_KEY" \
+            -d "$(jq -n --arg prompt "$PROMPT_CONTENT" '{
+              model: "gpt-4o",
+              messages: [{"role": "user", "content": $prompt}],
+              max_tokens: 4000,
+              temperature: 0.1
+            }')")
 
-            ### Summary
+          REVIEW_RESULT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty')
 
-            At the end, output a JSON block:
-            ```json
-            {"has_a_class_risks": true|false, "total_a_class": <count>, "total_b_class": <count>}
-            ```
+          if [ -z "$REVIEW_RESULT" ]; then
+            ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error.message // "Unknown error"')
+            echo "::error::OpenAI API error: $ERROR_MSG"
+            REVIEW_RESULT="Error calling OpenAI API: $ERROR_MSG"
+          fi
 
-            Be especially strict about IAM policies and secret handling.
+          echo "$REVIEW_RESULT" > review_result.txt
 
       - name: Parse scan results
         id: parse
-        env:
-          SCAN_RESPONSE: ${{ steps.scan.outputs.response }}
         run: |
-          # Parse JSON from response for more reliable detection
-          if echo "$SCAN_RESPONSE" | grep -q '"has_a_class_risks": true'; then
-            echo "has_a_class_risks=true" >> $GITHUB_OUTPUT
-          elif echo "$SCAN_RESPONSE" | grep -q '"has_a_class_risks":true'; then
+          if grep -q '"has_a_class_risks": true\|"has_a_class_risks":true' review_result.txt; then
             echo "has_a_class_risks=true" >> $GITHUB_OUTPUT
           else
             echo "has_a_class_risks=false" >> $GITHUB_OUTPUT
@@ -164,17 +165,15 @@ jobs:
 
       - name: Post review comments
         uses: actions/github-script@v7
-        env:
-          SCAN_RESPONSE: ${{ steps.scan.outputs.response }}
         with:
           script: |
-            const response = process.env.SCAN_RESPONSE || 'No response from AI review';
-
+            const fs = require('fs');
+            const response = fs.readFileSync('review_result.txt', 'utf8') || 'No response from AI review';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: `## AI Code Review Results (Infrastructure/CDK)\n\n${response}`
+              body: `## AI Code Review Results (Infrastructure/CDK - GPT-4)\n\n${response}`
             });
 
   block-on-a-class:
@@ -182,17 +181,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: risk-scan
     if: needs.risk-scan.outputs.has_a_class_risks == 'true'
-
     steps:
       - name: Block PR
         run: |
           echo "::error::A-Class risks detected in infrastructure code. Human review required."
-          echo ""
-          echo "This PR contains A-Class risks that require human review."
-          echo "Infrastructure changes require extra scrutiny. Please:"
-          echo "  1. Fix the identified risks"
-          echo "  2. Add RISK-ACCEPTED comments with justification"
-          echo "  3. Request exemption from a senior DevOps engineer"
           exit 1
 
   approve-no-risks:
@@ -200,8 +192,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: risk-scan
     if: needs.risk-scan.outputs.has_a_class_risks == 'false'
-
     steps:
       - name: Approve
-        run: |
-          echo "No A-Class risks detected in infrastructure code. PR can proceed."
+        run: echo "No A-Class risks detected. PR can proceed."
